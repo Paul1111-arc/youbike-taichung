@@ -1,0 +1,54 @@
+name: collect
+
+on:
+  schedule:
+    # 每 15 分鐘。GitHub 的排程常延遲 5–15 分鐘，不影響分析：
+    # 每筆資料都帶來源端自己的 src_time。
+    - cron: "*/15 * * * *"
+  workflow_dispatch:        # 也可以在 Actions 頁手動按一次
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet requests
+
+      - name: 抓一次
+        env:
+          TDX_CLIENT_ID: ${{ secrets.TDX_CLIENT_ID }}
+          TDX_CLIENT_SECRET: ${{ secrets.TDX_CLIENT_SECRET }}
+        run: python collect_once.py
+
+      - name: 推回 repo
+        run: |
+          set -e
+          git config user.name  "youbike-bot"
+          git config user.email "youbike-bot@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "沒有新檔案，跳過"
+            exit 0
+          fi
+          git commit -m "data: $(date -u '+%Y-%m-%dT%H:%MZ')"
+          for i in 1 2 3 4 5; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && \
+            git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            echo "push 衝突，第 $i 次重試"
+            sleep $((i * 6))
+          done
+          echo "push 連續失敗" >&2
+          exit 1
